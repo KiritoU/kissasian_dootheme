@@ -11,6 +11,8 @@ from settings import CONFIG
 
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(message)s", level=logging.INFO)
 
+EPISODE_COVER = False
+
 KEY_MAPPING = {
     "IMDb": "imdbRating",
     "Duration": "episode_run_time",
@@ -353,20 +355,15 @@ class Dootheme:
         return video_players_serialize.decode("utf-8")
 
     def insert_episodes(self, post_id: int, season_id: int):
-        episodes_keys = list(self.episodes.keys())
-        episodes_keys.reverse()
-        lenEpisodes = len(episodes_keys)
+        self.episodes.reverse()
 
         # self.update_season_number_of_episodes(season_id, lenEpisodes)
 
-        for i in range(lenEpisodes):
-            episode_number = episodes_keys[i]
-            episode = self.episodes[episode_number]
+        for i, episode in enumerate(self.episodes):
             episode_title = episode["title"]
 
             episode_name = (
-                self.film["post_title"]
-                + f': {self.film["season_number"]}x{episode_number}'
+                self.film["post_title"] + f': {self.film["season_number"]}x{i+1}'
             )
             condition_post_title = episode_name.replace("'", "''")
             condition = (
@@ -397,7 +394,7 @@ class Dootheme:
                     (
                         episode_id,
                         "episodio",
-                        episode_number,
+                        i + 1,
                     ),
                     (
                         episode_id,
@@ -408,11 +405,6 @@ class Dootheme:
                         episode_id,
                         "episode_name",
                         episode_title,
-                    ),
-                    (
-                        episode_id,
-                        "dt_backdrop",
-                        self.film["poster_url"],
                     ),
                     (episode_id, "ids", post_id),
                     (episode_id, "clgnrt", "1"),
@@ -428,6 +420,15 @@ class Dootheme:
                         f"{int(self.get_timeupdate().timestamp())}:1",
                     ),
                 ]
+
+                if EPISODE_COVER:
+                    episode_postmeta.append(
+                        (
+                            episode_id,
+                            "dt_backdrop",
+                            self.film["poster_url"],
+                        )
+                    )
 
                 # if "air_date" in self.film.keys():
                 #     episode_postmeta.append(

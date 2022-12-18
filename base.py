@@ -1,8 +1,10 @@
 import logging
 
 from bs4 import BeautifulSoup
+from time import sleep
 
 
+from _db import database
 from helper import helper
 from settings import CONFIG
 from dootheme import Dootheme
@@ -19,63 +21,104 @@ class Crawler:
 
         return soup
 
-    def get_episodes_data(self, watching_href: str) -> dict:
-        if "http" not in watching_href:
-            watching_href = CONFIG.SERIES9_HOMEPAGE + watching_href
+    def get_episode_details(self, href, title) -> dict:
+        if "http" not in href:
+            href = CONFIG.KISSASIAN_HOMEPAGE + href
 
-        res = {}
+        res = {
+            "title": title,
+        }
         try:
-            soup = self.crawl_soup(watching_href)
+            soup = self.crawl_soup(href)
 
-            main_detail = soup.find("div", class_="main-detail")
-            mv_info = main_detail.find("div", {"id": "mv-info"})
-            list_eps = mv_info.find("div", {"id": "list-eps"})
-            servers = list_eps.find_all("div", class_="le-server")
-            for server in servers:
-                les_content = server.find("div", class_="les-content")
-                episodes = les_content.find_all("a")
-                for episode in episodes:
-                    title = episode.get("title")
-                    player_data = episode.get("player-data")
-                    episode_data = episode.get("episode-data")
+            res["links"] = helper.get_links_from(soup)
 
-                    res.setdefault(episode_data, {})
-                    res[episode_data].setdefault("title", "")
-                    res[episode_data].setdefault("links", [])
-
-                    if res[episode_data]["title"] != title:
-                        res[episode_data]["title"] = title
-                    res[episode_data]["links"].append(player_data)
+            res["released"] = helper.get_released_from(soup)
 
         except Exception as e:
             helper.error_log(
-                f"Failed to get episode information\n{watching_href}\n{e}",
-                log_file="episodes.log",
+                f"Failed to get episode player link\n{href}\n{e}",
+                log_file="base.get_episode_details.log",
             )
+            return {}
 
         return res
 
-    def crawl_film(self, href: str, post_type: str = "tvshows"):
+    def get_episodes_data(self, soup: BeautifulSoup) -> list:
+        res = []
+        barContentEpisode = soup.find("div", class_="barContentEpisode")
+        if not barContentEpisode:
+            return
+
+        listing = barContentEpisode.find("ul", class_="listing")
+        if not listing:
+            return
+
+        items = listing.find_all("li")
+        for item in items:
+            try:
+                a_element = item.find("a")
+                episodeTitle = helper.format_text(a_element.get("title"))
+                episodeHref = a_element.get("href")
+
+                res.append(self.get_episode_details(episodeHref, episodeTitle))
+            except Exception as e:
+                helper.error_log(
+                    msg=f"Failed to get child episode\n{item}\n{e}",
+                    log_file="base.get_episodes_data.log",
+                )
+
+        return res
+
+    def crawl_film(self, href: str, post_type: str = "series"):
         soup = self.crawl_soup(href)
 
-        title, description = helper.get_title_and_description(soup)
-        watching_href, fondo_player = helper.get_watching_href_and_fondo(soup)
-        if not watching_href:
-            watching_href += "/watching.html"
+        if soup == 404:
+            return
 
-        poster_url = helper.get_poster_url(soup)
+        barContentInfo = soup.find("div", class_="barContentInfo")
 
-        fondo_player = helper.add_https_to(fondo_player)
+        if not barContentInfo:
+            helper.error_log(
+                f"No bar content info was found in {href}",
+                log_file="base.crawl_film.noBarContentInfo.log",
+            )
+
+        title = helper.get_title_from(barContentInfo)
+
+        poster_url = helper.get_poster_url(barContentInfo)
         poster_url = helper.add_https_to(poster_url)
+        fondo_player = poster_url
 
-        trailer_id = helper.get_trailer_id(soup)
-        extra_info = helper.get_extra_info(soup)
+        genres = helper.get_genres_from(barContentInfo)
+        status = helper.get_status_from(barContentInfo)
+
+        description = helper.get_description_from(barContentInfo)
 
         if not title:
             helper.error_log(
                 msg=f"No title was found\n{href}", log_file="base.no_title.log"
             )
             return
+
+        trailer_id = ""
+
+        genres.append(status)
+
+        extra_info = {
+            "Genre": genres,
+        }
+
+        episodes_data = self.get_episodes_data(soup)
+        if not episodes_data:
+            helper.error_log(
+                f"No episodes were found: {href}", log_file="base.no_episodes.log"
+            )
+            return
+
+        if episodes_data[0]:
+            first_child = episodes_data[0]
+            extra_info["Release"] = first_child["released"]
 
         film_data = {
             "title": title,
@@ -87,44 +130,47 @@ class Crawler:
             "extra_info": extra_info,
         }
 
-        episodes_data = self.get_episodes_data(watching_href)
-
         return [film_data, episodes_data]
 
-    def crawl_page(self, url, post_type: str = "tvshows"):
-
+    def crawl_page(self, url, post_type: str = "series"):
         soup = self.crawl_soup(url)
 
-        movies_list = soup.find("div", class_="movies-list")
-        if not movies_list:
+        if soup == 404:
             return 0
 
-        ml_items = movies_list.find_all("div", class_="ml-item")
-        if not ml_items:
+        list_drama = soup.find("div", class_="list-drama")
+        if not list_drama:
             return 0
 
-        for item in ml_items:
+        items = list_drama.find_all("div", class_="item")
+        if not items:
+            return 0
+
+        for item in items:
             try:
                 href = item.find("a").get("href")
 
                 if "http" not in href:
-                    href = CONFIG.SERIES9_HOMEPAGE + href
+                    href = CONFIG.KISSASIAN_HOMEPAGE + href
 
                 film_data, episodes_data = self.crawl_film(
                     href=href, post_type=post_type
                 )
 
                 Dootheme(film_data, episodes_data).insert_film()
+
             except Exception as e:
-                helper.error_log(f"Failed to get href\n{item}\n{e}", "page.log")
+                helper.error_log(
+                    f"Failed to get href\n{item}\n{e}", "base.crawl_page.log"
+                )
 
         return 1
 
 
 if __name__ == "__main__":
-    Crawler().crawl_page(
-        "https://series9.la/movie/filter/movie/all/all/all/all/latest/?page=599", "post"
-    )
+    # Crawler_Site().crawl_page(
+    #     "https://series9.la/movie/filter/movie/all/all/all/all/latest/?page=599", "post"
+    # )
     # Crawler_Site().crawl_episodes(
     #     1, "https://series9.la/film/country-queen-season-1/watching.html", "", "", ""
     # )
@@ -133,7 +179,7 @@ if __name__ == "__main__":
     # Crawler_Site().crawl_film(
     #     "https://series9.la/film/the-curse-of-oak-island-season-10"
     # )
-    # Crawler_Site().crawl_film("https://series9.la//film/crossing-lines-season-3-wds")
+    Crawler().crawl_film("https://ww1.kissanime.so/info/ling-tian-divine-emperor")
 
     # Crawler_Site().crawl_film(
     #     "https://series9.la//film/ghost-adventures-bwm", post_type="post"

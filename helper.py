@@ -1,12 +1,10 @@
-import base64
+import re
 import requests
 
 
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from html import escape
 from pathlib import Path
-from phpserialize import serialize
 from slugify import slugify
 from time import sleep
 
@@ -95,22 +93,31 @@ class Helper:
 
         return res
 
-    def get_title_and_season_number(self, series9_title: str) -> list:
-        title = series9_title
+    def isNumber(self, strSeason: str) -> bool:
+        try:
+            float(strSeason)
+            return True
+        except Exception as e:
+            return False
+
+    def get_title_and_season_number(self, title: str) -> list:
+        title = title
         season_number = "1"
 
-        try:
+        title = " ".join(title.split())
+        x = re.search(
+            r"(\d+(th|st|nd|rd)\s(Season|Seaon|Seson|Sason))|((Season|Seaon|Seson|Sason)\s\d+)",
+            title,
+        )
+        if x:
+            season = x.group()
+            title = title.replace(season, "")
+            for number in season.split():
+                for suffix in ["th", "st", "nd", "rd"]:
+                    number = number.replace(suffix, "")
 
-            for seasonSplitText in CONFIG.SEASON_SPLIT_TEXTS:
-                if seasonSplitText in series9_title:
-                    title, season_number = series9_title.split(seasonSplitText)
-                    break
-
-        except Exception as e:
-            self.error_log(
-                msg=f"Failed to find title and season number\n{series9_title}\n{e}",
-                log_file="helper.get_title_and_season_number.log",
-            )
+                if self.isNumber(number):
+                    season_number = number
 
         return [
             self.format_text(title),
@@ -134,20 +141,15 @@ class Helper:
             )
             return ["", ""]
 
-    def get_poster_url(self, soup: BeautifulSoup) -> str:
+    def get_poster_url(self, barContentInfo: BeautifulSoup) -> str:
         try:
-            mvi_content = soup.find("div", class_="mvi-content")
-            mvic_thumb = mvi_content.find("div", class_="mvic-thumb")
-            poster_url = (
-                mvic_thumb.get("style")
-                .replace("background-image: url(", "")
-                .replace(");", "")
-            )
+            img_picture_mb = barContentInfo.find("div", class_="img_picture_mb")
+            poster_url = img_picture_mb.find("img").get("src")
             return poster_url
 
         except Exception as e:
             self.error_log(
-                msg=f"Failed to get poster URL\n{str(soup)}\n{e}",
+                msg=f"Failed to get poster URL\n{str(barContentInfo)}\n{e}",
                 log_file="helper.get_poster_url.log",
             )
             return ""
@@ -219,7 +221,7 @@ class Helper:
             "title": title,
             "post_type": post_type,
             # "id": "202302",
-            "youtube_id": f"{trailer_id}",
+            "youtube_id": f"[{trailer_id}]",
             # "serie_vote_average": extra_info["IMDb"],
             # "episode_run_time": extra_info["Duration"],
             "fondo_player": fondo_player,
@@ -231,18 +233,9 @@ class Helper:
             # "country": extra_info["Country"],
         }
 
-        key_mapping = {
-            "IMDb": "rating",
-            "Duration": "field_runtime",
-            "Genre": "category",
-            "Actor": "cast",
-            "Director": "directors",
-            "Country": "country",
-        }
-
-        for info_key in ["IMDb", "Duration", "Genre", "Actor", "Director", "Country"]:
+        for info_key in CONFIG.KEY_MAPPING.keys():
             if info_key in extra_info.keys():
-                post_data[key_mapping[info_key]] = extra_info[info_key]
+                post_data[CONFIG.KEY_MAPPING[info_key]] = extra_info[info_key]
         if "Release" in extra_info.keys():
             post_data["annee"] = [extra_info["Release"]]
 
@@ -258,39 +251,6 @@ class Helper:
             players.append(CONFIG.IFRAME.format(link))
 
         return players
-
-    def generate_episode_data(
-        self,
-        post_id,
-        episode_name,
-        season_number,
-        episode_number,
-        post_title,
-        fondo_player,
-        poster_url,
-        quality,
-        episode_links,
-    ):
-        players = self.get_players_iframes(episode_links)
-
-        episode_data = {
-            "post_id": post_id,
-            "title": episode_name,
-            "description": CONFIG.EPISODE_DEFAULT_DESCRIPTION.format(post_title),
-            "post_type": "episodes",
-            # "ids": "202302",
-            "season_number": season_number,
-            "episode_number": episode_number,
-            "serie": post_title,
-            "name": episode_name,
-            # "air_date": "2022-07-14",
-            "fondo_player": fondo_player,
-            "poster_serie": poster_url,
-            "quality": quality,
-            "players": players,
-        }
-
-        return episode_data
 
     def get_timeupdate(self) -> datetime:
 
@@ -350,7 +310,7 @@ class Helper:
             "",
             "publish",
             "open",
-            "open",
+            "closed",
             "",
             slugify(self.format_slug(post_data["title"])),
             "",
@@ -563,12 +523,7 @@ class Helper:
             )
         )
 
-        for row in postmeta_data:
-            database.insert_into(
-                table=f"{CONFIG.TABLE_PREFIX}postmeta",
-                data=row,
-            )
-            sleep(0.01)
+        self.insert_postmeta(postmeta_data)
 
         sleep(0.01)
 
@@ -580,54 +535,110 @@ class Helper:
             )
             sleep(0.01)
 
-    def get_server_from(self, index: int, link: str) -> str:
+    def get_title_from(self, barContentInfo: BeautifulSoup) -> str:
         try:
-            link = link.replace("https://", "")
-            server = link.split("/")[0]
-            server = server.split(".")[0]
-            return server.capitalize()
+            title = barContentInfo.find("a", class_="bigChar").text
+
+            return self.format_text(title)
+
         except Exception as e:
             self.error_log(
-                msg=f"Error getting server: {link}\n{e}",
-                log_file="helper.get_server_from.log",
+                msg=f"Failed to find title\n{str(barContentInfo)}\n{e}",
+                log_file="helper.get_title_from.log",
+            )
+            return ""
+
+    def get_genres_from(self, barContentInfo: BeautifulSoup) -> list:
+        res = []
+
+        try:
+            for p in barContentInfo.find_all("p"):
+                if p.find("span"):
+                    key = p.find("span").text.replace(":", "").strip()
+                    if "genres" in key.lower():
+                        a_elements = p.find_all("a")
+                        for a in a_elements:
+                            a_title = a.get("title")
+                            res.append(self.format_text(a_title))
+
+        except Exception as e:
+            self.error_log(
+                msg=f"Failed to get genres\n{str(barContentInfo)}\n{e}",
+                log_file="genres.log",
             )
 
-        return f"Server {index}"
+        return res
 
-    def generate_trglinks(
-        self,
-        index: int,
-        link: str,
-        lang: str = "English",
-        quality: str = "HD",
-    ) -> str:
-        if "http" not in link:
-            link = "https:" + link
+    def get_status_from(self, barContentInfo: BeautifulSoup) -> str:
+        res = "Ongoing"
 
-        server = self.get_server_from(index, link)
-        server_term_id, isNewServer = self.insert_terms(
-            post_id=0, terms=[server], taxonomy="server"
-        )
+        try:
+            for p in barContentInfo.find_all("p"):
+                if p.find("span"):
+                    key = p.find("span").text.replace(":", "").strip()
+                    if "status" in key.lower():
+                        value = p.text.replace("Status:", "")
+                        value = self.format_text(value)
 
-        lang_term_id, isNewLang = self.insert_terms(
-            post_id=0, terms=[lang], taxonomy="language"
-        )
+                        return value
 
-        quality_term_id, isNewQuality = self.insert_terms(
-            post_id=0, terms=[quality], taxonomy="quality"
-        )
+        except Exception as e:
+            self.error_log(
+                msg=f"Failed to get status\n{str(barContentInfo)}\n{e}",
+                log_file="helper.get_status_from.log",
+            )
 
-        link_data = {
-            "type": "1",
-            "server": str(server_term_id),
-            "lang": int(lang_term_id),
-            "quality": int(quality_term_id),
-            "link": base64.b64encode(bytes(escape(link), "utf-8")).decode("utf-8"),
-            "date": self.get_timeupdate().strftime("%d/%m/%Y"),
-        }
-        link_data_serialized = serialize(link_data).decode("utf-8")
+        return res
 
-        return f's:{len(link_data_serialized)}:"{link_data_serialized}";'
+    def get_description_from(self, barContentInfo: BeautifulSoup) -> str:
+        des = barContentInfo.find("p", class_="des")
+        res = self.format_text(des.text)
+
+        try:
+            for p in barContentInfo.find_all("p"):
+                if p.find("span"):
+                    key = p.find("span").text.replace(":", "").strip()
+                    if "other" in key.lower():
+
+                        res = self.format_text(p.text) + "\n\nDescription: " + res
+
+        except Exception as e:
+            self.error_log(
+                msg=f"Failed to get description\n{str(barContentInfo)}\n{e}",
+                log_file="helper.get_description_from.log",
+            )
+
+        return res
+
+    def get_links_from(self, soup: BeautifulSoup) -> str:
+        try:
+            # mutiserver = soup.find("div", class_="mutiserver")
+            mutiserver = soup.find("select", {"id": "selectServer"})
+            options = mutiserver.find_all("option")
+
+            return [option.get("value") for option in options]
+        except Exception as e:
+            self.error_log(
+                msg=f"Failed to get links from {e}\n{soup}",
+                log_file="helper.get_links_from.log",
+            )
+            return []
+
+    def get_released_from(self, soup: BeautifulSoup) -> str:
+        try:
+            release = soup.find("div", class_="Releasew")
+            replaceText = release.find("span").text
+
+            res = release.text.replace(replaceText, "").strip().strip("\n").strip()
+
+            return res
+
+        except Exception as e:
+            self.error_log(
+                msg=f"Failed get_released_from\n{soup}\n{e}",
+                log_file="helper.get_released_from.log",
+            )
+            return ""
 
 
 helper = Helper()
