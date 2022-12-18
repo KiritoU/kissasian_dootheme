@@ -64,7 +64,7 @@ class Crawler:
                 res.append(self.get_episode_details(episodeHref, episodeTitle))
             except Exception as e:
                 helper.error_log(
-                    msg=f"Failed to get child episode\n{item}\n{e}",
+                    msg=f"Failed to get child episode\n{e}",
                     log_file="base.get_episodes_data.log",
                 )
 
@@ -160,9 +160,7 @@ class Crawler:
                 Dootheme(film_data, episodes_data).insert_film()
 
             except Exception as e:
-                helper.error_log(
-                    f"Failed to get href\n{item}\n{e}", "base.crawl_page.log"
-                )
+                helper.error_log(f"Failed to get href\n{e}", "base.crawl_page.log")
 
         return 1
 
